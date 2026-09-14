@@ -25,9 +25,14 @@ jobs:
       - name: Prepare source archive
         shell: pwsh
         run: |
-          $archive = Join-Path $env:SOURCE_DIR 'source.zip'
-          if (!(Test-Path $archive)) { throw 'RC6.6 source.zip is missing' }
-          Copy-Item $archive source.zip -Force
+          $parts = Get-ChildItem "$env:SOURCE_DIR/source.part*.b64" | Sort-Object Name
+          if (!$parts) { throw 'RC6.6 source chunks are missing' }
+          $b64 = ($parts | ForEach-Object { (Get-Content $_.FullName -Raw).Trim() }) -join ''
+          try {
+            [IO.File]::WriteAllBytes('source.zip', [Convert]::FromBase64String($b64))
+          } catch {
+            throw "RC6.6 source chunks are invalid base64: $($_.Exception.Message)"
+          }
           Expand-Archive source.zip srcpkg -Force
           $root = Get-ChildItem srcpkg -Directory | Select-Object -First 1
           if (!$root) { throw 'Source root missing' }
