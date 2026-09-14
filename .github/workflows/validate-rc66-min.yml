@@ -1,0 +1,29 @@
+name: Validate RC6.6 minimal source archive
+
+on:
+  push:
+    paths:
+      - 'release-source/validate-min/READY'
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Reassemble min archive
+        shell: pwsh
+        run: |
+          $parts = Get-ChildItem 'release-source/rc6.6/min.part*.b64' | Sort-Object Name
+          Write-Host "PART_COUNT=$($parts.Count)"
+          if (!$parts) { throw 'min chunks missing' }
+          $b64 = ($parts | ForEach-Object { (Get-Content $_.FullName -Raw).Trim() }) -join ''
+          Write-Host "B64_LENGTH=$($b64.Length)"
+          try { [IO.File]::WriteAllBytes('min.zip',[Convert]::FromBase64String($b64)) } catch { throw "BASE64_INVALID: $($_.Exception.Message)" }
+          Write-Host "ZIP_SHA256=$((Get-FileHash min.zip -Algorithm SHA256).Hash.ToLowerInvariant())"
+          Write-Host "ZIP_SIZE=$((Get-Item min.zip).Length)"
+          Expand-Archive min.zip min-src -Force
+          Write-Host "FILE_COUNT=$((Get-ChildItem min-src -Recurse -File).Count)"
+          Get-ChildItem min-src -Recurse -File | ForEach-Object { Write-Host $_.FullName }
