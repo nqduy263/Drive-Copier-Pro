@@ -1,0 +1,175 @@
+name: Build and publish Drive Copier Pro 1.0.0
+
+on:
+  push:
+    paths:
+      - 'release-source/stable/READY'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  VERSION: 1.0.0
+  TAG: v1.0.0
+  PORTABLE_ASSET: DriveCopier-Pro-1.0.0-Portable-win-x64.zip
+  SETUP_ASSET: DriveCopier-Pro-1.0.0-Setup-x64.exe
+  OWNER_ASSET: DriveCopier-License-Generator-Owner-1.0.0-win-x64.zip
+  SOURCE_DIR: release-source/stable
+  SOURCE_SHA256: 5e9a2b9d6bccf8d472cfad9b4efcd68ca68a68f0786dc9888970c5ecdfbaad27
+
+jobs:
+  release:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Reassemble official source
+        shell: pwsh
+        run: |
+          $parts = Get-ChildItem "$env:SOURCE_DIR/source.part*.b64" | Sort-Object Name
+          if (!$parts -or $parts.Count -lt 2) { throw 'Official source chunks are missing' }
+          $b64 = ($parts | ForEach-Object { (Get-Content $_.FullName -Raw).Trim() }) -join ''
+          [IO.File]::WriteAllBytes('official-source.zip', [Convert]::FromBase64String($b64))
+          $hash=(Get-FileHash official-source.zip -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($hash -ne $env:SOURCE_SHA256) { throw "Source archive SHA256 mismatch: $hash" }
+          Expand-Archive official-source.zip srcpkg -Force
+          $root = (Resolve-Path srcpkg).Path
+          "SOURCE_ROOT=$root" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Inject publisher Google OAuth identity
+        shell: pwsh
+        env:
+          CLIENT_ID: ${{ secrets.GOOGLE_OAUTH_CLIENT_ID }}
+          CLIENT_SECRET: ${{ secrets.GOOGLE_OAUTH_CLIENT_SECRET }}
+        run: |
+          if ([string]::IsNullOrWhiteSpace($env:CLIENT_ID)) { throw 'Missing GOOGLE_OAUTH_CLIENT_ID repository secret' }
+          if ([string]::IsNullOrWhiteSpace($env:CLIENT_SECRET)) { throw 'Missing GOOGLE_OAUTH_CLIENT_SECRET repository secret' }
+          $target = Join-Path $env:SOURCE_ROOT 'src/DriveCopier.GoogleDrive/Authentication/PublisherOAuthClient.Generated.cs'
+          $id = $env:CLIENT_ID.Replace('\\','\\\\').Replace('"','\\"')
+          $secret = $env:CLIENT_SECRET.Replace('\\','\\\\').Replace('"','\\"')
+          @"
+          namespace DriveCopier.GoogleDrive.Authentication;
+          internal static class PublisherOAuthClient
+          {
+              public const string ClientId = "$id";
+              public const string ClientSecret = "$secret";
+              public static bool IsConfigured => !string.IsNullOrWhiteSpace(ClientId) && ClientId.Contains(".apps.googleusercontent.com", StringComparison.OrdinalIgnoreCase);
+          }
+          "@ | Set-Content $target -Encoding utf8
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Restore and build solution
+        shell: pwsh
+        working-directory: ${{ env.SOURCE_ROOT }}
+        run: |
+          dotnet restore DriveCopier.sln
+          dotnet build DriveCopier.sln -c Release --no-restore
+
+      - name: Publish Drive Copier and updater
+        shell: pwsh
+        working-directory: ${{ env.SOURCE_ROOT }}
+        run: |
+          dotnet publish src/DriveCopier.App/DriveCopier.App.csproj -c Release -r win-x64 --self-contained true -p:PublishSingleFile=false -o publish/win-x64
+          dotnet publish src/DriveCopier.Updater/DriveCopier.Updater.csproj -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -o publish/updater
+          Copy-Item publish/updater/DriveCopier.Updater.exe publish/win-x64/DriveCopier.Updater.exe -Force
+          New-Item -ItemType Directory -Force publish/win-x64/data,publish/win-x64/logs,publish/win-x64/reports | Out-Null
+
+      - name: Publish owner License Generator
+        shell: pwsh
+        working-directory: ${{ env.SOURCE_ROOT }}
+        run: |
+          dotnet publish src/DriveCopier.LicenseGenerator/DriveCopier.LicenseGenerator.csproj -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -o publish/license-generator
+          @'
+          OWNER ONLY
+          1. Run DriveCopier.LicenseGenerator.exe.
+          2. Import OWNER_LICENSE_PRIVATE_KEY.pem once. The key is stored locally encrypted with Windows DPAPI.
+          3. Enter the customer's Google login email and create the license.
+          4. Never distribute the private key.
+          '@ | Set-Content publish/license-generator/OWNER_README.txt -Encoding utf8
+
+      - name: Package portable and owner tool
+        shell: pwsh
+        working-directory: ${{ env.SOURCE_ROOT }}
+        run: |
+          Compress-Archive -Path 'publish/win-x64/*' -DestinationPath $env:PORTABLE_ASSET -Force
+          Compress-Archive -Path 'publish/license-generator/*' -DestinationPath $env:OWNER_ASSET -Force
+
+      - name: Install Inno Setup
+        shell: pwsh
+        run: choco install innosetup -y --no-progress
+
+      - name: Build Windows installer
+        shell: pwsh
+        working-directory: ${{ env.SOURCE_ROOT }}
+        run: |
+          $iscc = Join-Path ${env:ProgramFiles(x86)} 'Inno Setup 6\ISCC.exe'
+          if (!(Test-Path $iscc)) { $iscc = Join-Path $env:ProgramFiles 'Inno Setup 6\ISCC.exe' }
+          if (!(Test-Path $iscc)) { throw 'ISCC.exe not found after installing Inno Setup' }
+          & $iscc 'installer\DriveCopierPro.iss'
+          if ($LASTEXITCODE -ne 0) { throw 'Inno Setup build failed' }
+          $setup = Join-Path $env:SOURCE_ROOT 'release\DriveCopier-Pro-1.0.0-Setup-x64.exe'
+          if (!(Test-Path $setup)) { throw 'Installer output missing' }
+
+      - name: Generate checksums
+        shell: pwsh
+        working-directory: ${{ env.SOURCE_ROOT }}
+        run: |
+          $portable=(Resolve-Path $env:PORTABLE_ASSET).Path
+          $setup=(Resolve-Path 'release\DriveCopier-Pro-1.0.0-Setup-x64.exe').Path
+          $pHash=(Get-FileHash $portable -Algorithm SHA256).Hash.ToLowerInvariant()
+          $sHash=(Get-FileHash $setup -Algorithm SHA256).Hash.ToLowerInvariant()
+          $pSize=(Get-Item $portable).Length
+          @"
+          $pHash  $env:PORTABLE_ASSET
+          $sHash  $env:SETUP_ASSET
+          "@ | Set-Content SHA256.txt -Encoding ascii
+          "PORTABLE_PATH=$portable" | Out-File $env:GITHUB_ENV -Encoding utf8 -Append
+          "SETUP_PATH=$setup" | Out-File $env:GITHUB_ENV -Encoding utf8 -Append
+          "PORTABLE_SHA=$pHash" | Out-File $env:GITHUB_ENV -Encoding utf8 -Append
+          "PORTABLE_SIZE=$pSize" | Out-File $env:GITHUB_ENV -Encoding utf8 -Append
+          "SHA_PATH=$((Resolve-Path SHA256.txt).Path)" | Out-File $env:GITHUB_ENV -Encoding utf8 -Append
+          "OWNER_PATH=$((Resolve-Path $env:OWNER_ASSET).Path)" | Out-File $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Publish official GitHub Release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release view $env:TAG --repo $env:GITHUB_REPOSITORY *> $null
+          if ($LASTEXITCODE -eq 0) { gh release delete $env:TAG --repo $env:GITHUB_REPOSITORY --yes --cleanup-tag }
+          gh release create $env:TAG $env:PORTABLE_PATH $env:SETUP_PATH $env:SHA_PATH --repo $env:GITHUB_REPOSITORY --title "Drive Copier Pro 1.0.0" --notes-file "$env:SOURCE_ROOT/OFFICIAL_RELEASE_NOTES.md" --latest
+
+      - name: Update stable auto-update manifest
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force updates | Out-Null
+          $obj = [ordered]@{
+            channel='stable'
+            version=$env:VERSION
+            tag=$env:TAG
+            published_at=(Get-Date).ToUniversalTime().ToString('o')
+            download_url="https://github.com/$env:GITHUB_REPOSITORY/releases/download/$env:TAG/$env:PORTABLE_ASSET"
+            sha256=$env:PORTABLE_SHA
+            size=[int64]$env:PORTABLE_SIZE
+            release_notes='Drive Copier Pro 1.0.0 official: installer, portable, 7-day trial, email-bound signed licensing, persistent Google login and stable updater.'
+          }
+          $obj | ConvertTo-Json | Set-Content updates/stable.json -Encoding utf8
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add updates/stable.json
+          git commit -m "Publish stable update manifest 1.0.0" || echo "manifest unchanged"
+          git push
+
+      - name: Upload owner License Generator artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: DriveCopier-License-Generator-Owner-1.0.0
+          path: ${{ env.OWNER_PATH }}
+          if-no-files-found: error
+          retention-days: 90
