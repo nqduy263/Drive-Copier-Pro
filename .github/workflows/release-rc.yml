@@ -23,7 +23,7 @@ jobs:
       - name: Rebuild source archive
         shell: pwsh
         run: |
-          $parts = Get-ChildItem 'release-source/rc6.4/source.part*.b64' | Sort-Object Name
+          $parts = Get-ChildItem 'release-source/rc6.4/source.goodpart*.b64' | Sort-Object Name
           if (!$parts) { throw 'Source chunks missing' }
           $b64 = ($parts | ForEach-Object { Get-Content $_.FullName -Raw }) -join ''
           [IO.File]::WriteAllBytes('source.zip', [Convert]::FromBase64String($b64))
