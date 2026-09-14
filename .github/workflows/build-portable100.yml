@@ -10,8 +10,6 @@ permissions:
   contents: read
 
 env:
-  SOURCE_ZIP: release-source/portable100/portable100_source.zip
-  SOURCE_SHA256: 6e33b0f7aeff01951a092d2b20050c04bd191c6c827e9fbafab4b19e5fe426b8
   PORTABLE_NAME: DriveCopier-Pro-1.0.0-Portable-win-x64.zip
 
 jobs:
@@ -20,14 +18,16 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Verify and extract source archive
+      - name: Reassemble and extract source archive
         shell: pwsh
         run: |
-          if (!(Test-Path $env:SOURCE_ZIP)) { throw "Missing $env:SOURCE_ZIP" }
-          $hash=(Get-FileHash $env:SOURCE_ZIP -Algorithm SHA256).Hash.ToLowerInvariant()
-          Write-Host "SOURCE_SHA256=$hash"
-          if ($hash -ne $env:SOURCE_SHA256) { throw "Source archive SHA256 mismatch: $hash" }
-          Expand-Archive $env:SOURCE_ZIP source -Force
+          $parts = Get-ChildItem 'release-source/portable100/src2.part*.b64' | Sort-Object Name
+          if (!$parts -or $parts.Count -ne 5) { throw "Expected 5 src2 chunks; found $($parts.Count)" }
+          $b64 = ($parts | ForEach-Object { (Get-Content $_.FullName -Raw).Trim() }) -join ''
+          [IO.File]::WriteAllBytes('portable-source.zip',[Convert]::FromBase64String($b64))
+          $hash=(Get-FileHash portable-source.zip -Algorithm SHA256).Hash.ToLowerInvariant()
+          Write-Host "REASSEMBLED_SOURCE_SHA256=$hash"
+          Expand-Archive portable-source.zip source -Force
           $sln = Get-ChildItem source -Recurse -Filter DriveCopier.sln | Select-Object -First 1
           if (!$sln) { throw 'DriveCopier.sln not found after extraction' }
           $root = $sln.Directory.FullName
@@ -90,10 +90,8 @@ jobs:
           @'
           DRIVE COPIER PRO 1.0.0 PORTABLE
 
-          1. Extract the entire ZIP to a writable folder.
-          2. Double-click DriveCopierPro.exe.
-          3. No .NET installation is required; this package is self-contained for Windows x64.
-          4. Keep DriveCopier.Updater.exe in the same folder for in-app updates.
+          Extract the ZIP and double-click DriveCopierPro.exe.
+          No .NET installation is required. Keep DriveCopier.Updater.exe in the same folder.
           '@ | Set-Content (Join-Path $dir 'README_PORTABLE.txt') -Encoding utf8
           if (!(Test-Path (Join-Path $dir 'DriveCopierPro.exe'))) { throw 'DriveCopierPro.exe missing' }
           if (!(Test-Path (Join-Path $dir 'DriveCopier.Updater.exe'))) { throw 'DriveCopier.Updater.exe missing' }
