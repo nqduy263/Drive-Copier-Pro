@@ -11,7 +11,7 @@ permissions:
 
 env:
   SOURCE_ZIP: release-source/portable100/portable100_source.zip
-  SOURCE_SHA256: 9aff5490a4661d320370e3e50be89bbd4e38cef33eef4da4f30849f1b16d5bd2
+  SOURCE_SHA256: 6e33b0f7aeff01951a092d2b20050c04bd191c6c827e9fbafab4b19e5fe426b8
   PORTABLE_NAME: DriveCopier-Pro-1.0.0-Portable-win-x64.zip
 
 jobs:
