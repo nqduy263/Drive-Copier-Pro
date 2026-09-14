@@ -22,13 +22,12 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Rebuild source archive
+      - name: Prepare source archive
         shell: pwsh
         run: |
-          $parts = Get-ChildItem "$env:SOURCE_DIR/source.part*.b64" | Sort-Object Name
-          if (!$parts) { throw 'Source chunks missing' }
-          $b64 = ($parts | ForEach-Object { Get-Content $_.FullName -Raw }) -join ''
-          [IO.File]::WriteAllBytes('source.zip', [Convert]::FromBase64String($b64))
+          $archive = Join-Path $env:SOURCE_DIR 'source.zip'
+          if (!(Test-Path $archive)) { throw 'RC6.6 source.zip is missing' }
+          Copy-Item $archive source.zip -Force
           Expand-Archive source.zip srcpkg -Force
           $root = Get-ChildItem srcpkg -Directory | Select-Object -First 1
           if (!$root) { throw 'Source root missing' }
