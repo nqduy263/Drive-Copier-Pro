@@ -16,7 +16,7 @@ env:
   SETUP_ASSET: DriveCopier-Pro-1.0.0-Setup-x64.exe
   OWNER_ASSET: DriveCopier-License-Generator-Owner-1.0.0-win-x64.zip
   SOURCE_DIR: release-source/stable
-  SOURCE_SHA256: 5e9a2b9d6bccf8d472cfad9b4efcd68ca68a68f0786dc9888970c5ecdfbaad27
+  SOURCE_SHA256: fb153b6c26b186340ae1b64fb21441006cbc1cff78b82ec0f66cf6604b834e48
 
 jobs:
   release:
