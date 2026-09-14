@@ -1,0 +1,10 @@
+{
+  "channel": "rc",
+  "version": "1.0.0-rc6.4",
+  "tag": "v1.0.0-rc6.4",
+  "published_at": "2026-09-14T07:48:51Z",
+  "download_url": "https://github.com/nqduy263/Drive-Copier-Pro/releases/download/v1.0.0-rc6.4/DriveCopier-Pro-1.0.0-rc6.4-win-x64.zip",
+  "sha256": "d17d4609035fe06d18ff7487a67452eb963e288afc9313f5a7a0f9053c767d35",
+  "size": 102024779,
+  "release_notes": "RC6.4: source folder picker, Duplicate UI contrast fix, UI polish, manifest-based updater."
+}
