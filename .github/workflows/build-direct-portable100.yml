@@ -1,0 +1,147 @@
+name: Build Drive Copier Pro 1.0.0 Direct Portable
+
+on:
+  push:
+    paths:
+      - 'release-source/direct100/READY'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  SOURCE_SHA256: 1cb836db56bd06b60adfef71da9a9b887c8f3953b3a6070cf2b141ea112630a5
+  PORTABLE_NAME: DriveCopier-Pro-1.0.0-Portable-win-x64.zip
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Reassemble verified source
+        shell: pwsh
+        run: |
+          $paths = @(
+            'release-source/portable100/src2.part001.b64',
+            'release-source/portable100/src2.part002.b64',
+            'release-source/portable100/src2.part003.b64',
+            'release-source/portable100/src2.part004.b64',
+            'release-source/direct100/chunk04.b64',
+            'release-source/direct100/chunk05.b64',
+            'release-source/direct100/chunk06.b64'
+          )
+          foreach ($p in $paths) {
+            if (!(Test-Path $p)) { throw "Missing source chunk: $p" }
+          }
+          $b64 = ($paths | ForEach-Object { (Get-Content $_ -Raw).Trim() }) -join ''
+          [IO.File]::WriteAllBytes('source.zip', [Convert]::FromBase64String($b64))
+          $hash = (Get-FileHash source.zip -Algorithm SHA256).Hash.ToLowerInvariant()
+          Write-Host "SOURCE_SHA256=$hash"
+          if ($hash -ne $env:SOURCE_SHA256) { throw "Source checksum mismatch: $hash" }
+          Expand-Archive source.zip source -Force
+          $sln = Get-ChildItem source -Recurse -Filter DriveCopier.sln | Select-Object -First 1
+          if (!$sln) { throw 'DriveCopier.sln missing after extraction' }
+          $root = $sln.Directory.FullName
+          Write-Host "SOURCE_ROOT=$root"
+          "SOURCE_ROOT=$root" | Out-File $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Inject publisher Google OAuth identity
+        shell: pwsh
+        env:
+          CLIENT_ID: ${{ secrets.GOOGLE_OAUTH_CLIENT_ID }}
+          CLIENT_SECRET: ${{ secrets.GOOGLE_OAUTH_CLIENT_SECRET }}
+        run: |
+          if ([string]::IsNullOrWhiteSpace($env:CLIENT_ID)) { throw 'Missing GOOGLE_OAUTH_CLIENT_ID repository secret' }
+          if ([string]::IsNullOrWhiteSpace($env:CLIENT_SECRET)) { throw 'Missing GOOGLE_OAUTH_CLIENT_SECRET repository secret' }
+          $target = Join-Path $env:SOURCE_ROOT 'src/DriveCopier.GoogleDrive/Authentication/PublisherOAuthClient.Generated.cs'
+          if (!(Test-Path (Split-Path $target))) { throw "OAuth source folder missing: $(Split-Path $target)" }
+          $id = $env:CLIENT_ID.Replace('\','\\').Replace('"','\"')
+          $secret = $env:CLIENT_SECRET.Replace('\','\\').Replace('"','\"')
+          @"
+          namespace DriveCopier.GoogleDrive.Authentication;
+          internal static class PublisherOAuthClient
+          {
+              public const string ClientId = "$id";
+              public const string ClientSecret = "$secret";
+              public static bool IsConfigured => !string.IsNullOrWhiteSpace(ClientId) && ClientId.Contains(".apps.googleusercontent.com", StringComparison.OrdinalIgnoreCase);
+          }
+          "@ | Set-Content $target -Encoding utf8
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Prepare source for portable build
+        shell: pwsh
+        working-directory: ${{ env.SOURCE_ROOT }}
+        run: |
+          $csproj = 'src/DriveCopier.App/DriveCopier.App.csproj'
+          $xml = Get-Content $csproj -Raw
+          $xml = $xml.Replace('    <ApplicationIcon>Assets\DriveCopier.ico</ApplicationIcon>' + [Environment]::NewLine, '')
+          $xml = $xml.Replace('    <Resource Include="Assets\DriveCopier.ico" />' + [Environment]::NewLine, '')
+          Set-Content $csproj $xml -Encoding utf8
+
+      - name: Publish Drive Copier Pro self-contained win-x64
+        shell: pwsh
+        working-directory: ${{ env.SOURCE_ROOT }}
+        run: |
+          dotnet publish src/DriveCopier.App/DriveCopier.App.csproj -c Release -r win-x64 --self-contained true -p:PublishSingleFile=false -p:Version=1.0.0 -p:InformationalVersion=1.0.0 -p:AssemblyVersion=1.0.0.0 -p:FileVersion=1.0.0.0 -o publish/win-x64
+          if ($LASTEXITCODE -ne 0) { throw 'Drive Copier app publish failed' }
+
+      - name: Publish updater self-contained
+        shell: pwsh
+        working-directory: ${{ env.SOURCE_ROOT }}
+        run: |
+          dotnet publish src/DriveCopier.Updater/DriveCopier.Updater.csproj -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -p:Version=1.0.0 -p:InformationalVersion=1.0.0 -p:AssemblyVersion=1.0.0.0 -p:FileVersion=1.0.0.0 -o publish/updater
+          if ($LASTEXITCODE -ne 0) { throw 'Updater publish failed' }
+          Copy-Item publish/updater/DriveCopier.Updater.exe publish/win-x64/DriveCopier.Updater.exe -Force
+
+      - name: Finalize portable layout
+        shell: pwsh
+        working-directory: ${{ env.SOURCE_ROOT }}
+        run: |
+          $dir = Join-Path $env:SOURCE_ROOT 'publish/win-x64'
+          $main = Join-Path $dir 'DriveCopier.exe'
+          if (!(Test-Path $main)) {
+            $candidate = Get-ChildItem $dir -File -Filter '*.exe' | Where-Object { $_.Name -notin @('DriveCopier.Updater.exe','createdump.exe') } | Select-Object -First 1
+            if (!$candidate) { throw 'Main application EXE not found after publish' }
+            $main = $candidate.FullName
+          }
+          $portableExe = Join-Path $dir 'DriveCopierPro.exe'
+          Copy-Item $main $portableExe -Force
+          New-Item -ItemType Directory -Force (Join-Path $dir 'data'),(Join-Path $dir 'logs'),(Join-Path $dir 'reports') | Out-Null
+          @'
+          DRIVE COPIER PRO 1.0.0 PORTABLE
+
+          1. Extract the entire ZIP to a writable folder.
+          2. Double-click DriveCopierPro.exe.
+          3. No .NET installation is required. The Windows x64 runtime is bundled.
+          4. Keep DriveCopier.Updater.exe in the same folder for in-app updates.
+          '@ | Set-Content (Join-Path $dir 'README_PORTABLE.txt') -Encoding utf8
+          if (!(Test-Path $portableExe)) { throw 'DriveCopierPro.exe missing' }
+          if (!(Test-Path (Join-Path $dir 'DriveCopier.Updater.exe'))) { throw 'DriveCopier.Updater.exe missing' }
+
+      - name: Package and verify portable ZIP
+        shell: pwsh
+        working-directory: ${{ env.SOURCE_ROOT }}
+        run: |
+          $out = Join-Path $env:SOURCE_ROOT $env:PORTABLE_NAME
+          Compress-Archive -Path 'publish/win-x64/*' -DestinationPath $out -Force
+          $check = Join-Path $env:RUNNER_TEMP 'portable-check'
+          Expand-Archive $out $check -Force
+          if (!(Test-Path (Join-Path $check 'DriveCopierPro.exe'))) { throw 'ZIP verification failed: DriveCopierPro.exe missing' }
+          if (!(Test-Path (Join-Path $check 'DriveCopier.Updater.exe'))) { throw 'ZIP verification failed: DriveCopier.Updater.exe missing' }
+          $hash = (Get-FileHash $out -Algorithm SHA256).Hash.ToLowerInvariant()
+          $size = (Get-Item $out).Length
+          Write-Host "PORTABLE_SHA256=$hash"
+          Write-Host "PORTABLE_SIZE=$size"
+          "PORTABLE_PATH=$out" | Out-File $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Upload portable artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: DriveCopier-Pro-1.0.0-Portable-win-x64
+          path: ${{ env.PORTABLE_PATH }}
+          if-no-files-found: error
+          retention-days: 90
